@@ -6387,12 +6387,15 @@ const _modelSeqInfo = {};
 // of the model's full length — full-length crops are slow and memory-hungry on
 // an Apple GPU. Any length can still be typed in.
 const _MAC_DEFAULT_CROP_LATENTS = 128;
+// aiXander fork: elsewhere default to a 512-latent (~47 s) crop — learns style
+// without memorising whole-song structure (see docs/TODO/sa3-lora-finetune.md).
+const _DEFAULT_CROP_LATENTS = 512;
 let _cropUserEdited = false;  // typed by the user, or restored from a cloned run
 function _updateCropLength() {
   const model = document.getElementById('new-ft-base-model').value || 'sa3';
   const info = _modelSeqInfo[model] || _modelSeqInfo['sa3'];
-  document.getElementById('new-ft-crop-length').value =
-    _platform === 'apple' ? Math.min(_MAC_DEFAULT_CROP_LATENTS, info.length) : info.length;
+  document.getElementById('new-ft-crop-length').value = Math.min(
+    _platform === 'apple' ? _MAC_DEFAULT_CROP_LATENTS : _DEFAULT_CROP_LATENTS, info.length);
   _cropUserEdited = false;
   _updateCropSeconds();
   if (typeof _renderDemoEntries === 'function') _renderDemoEntries();
@@ -6623,12 +6626,13 @@ window.openNewFinetuneModal = async function() {
   for (const _pref of ['sa3-medium', 'sa3-med', 'sa3']) {
     if (_bmOptions.has(_pref)) { _bmEl.value = _pref; break; }
   }
-  document.getElementById('new-ft-base-precision').value = 'fp16';
+  // fork: was 'fp16'; '' = keep the shipped fp32 base (measured no slower on a 3090, ~7 GB)
+  document.getElementById('new-ft-base-precision').value = _platform === 'apple' ? 'fp16' : '';
   // Engine: default mlx on Apple, torch elsewhere (options filtered/relabeled by _applyEngineOptions).
   _applyEngineOptions();
   document.getElementById('new-ft-engine').value = _engines.includes('mlx') ? 'mlx' : 'torch';
   document.getElementById('new-ft-batch').value = '1';
-  document.getElementById('new-ft-steps').value = '40000';
+  document.getElementById('new-ft-steps').value = '10000';  // fork: was 40000; ~10k = "creatively underfit"
   document.getElementById('new-ft-lora-type').value = 'dora-rows';
   const _ltNote = document.getElementById('new-ft-lora-type-note');
   if (_ltNote) { _ltNote.textContent = ''; _ltNote.style.display = 'none'; }
@@ -6640,7 +6644,7 @@ window.openNewFinetuneModal = async function() {
   renderModuleChips();
   document.getElementById('new-ft-layer-filter').removeAttribute('open');
   document.getElementById('new-ft-lr').value = '1e-4';
-  document.getElementById('new-ft-ckpt-every').value = '1000';
+  document.getElementById('new-ft-ckpt-every').value = '500';  // fork: was 1000; finer grid to pick by ear
   document.getElementById('new-ft-demo-every').value = '1000';
   document.getElementById('new-ft-next-btn').disabled = true;
   // Clear any seed from a prior open (restores the load button)

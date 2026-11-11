@@ -1,66 +1,23 @@
-# Plan: first SA3 LoRA finetune on our own audio
+# Djrum v1 LoRA (`djrum-uts-v1`): what's left after training
 
-**Status:** researched, nothing run yet. Goal: a DoRA adapter on SA3-medium that carries one style from our own audio, usable at inference on the Mac. The upstream [README](../../README.md) is the full manual for the dashboard. This file keeps only our decisions, findings and open steps.
+**For the agent picking this up:** training is finished; what remains is Xander's listening and the Mac-side follow-through below. How to launch and babysit a run, the standard demo set and how to read the dashboard charts are in [../reference/sa3-lora-training.md](../reference/sa3-lora-training.md) (**Running a job**, **Choosing a checkpoint**). Paths are relative to `AI_Audio/`.
 
-**Where things run:** prep and inference on the M2 Mac. **Training always runs on the NVIDIA GPU box** (the Mac is too slow; Xander's call). Modal only if the box can't do it, and that needs a go-ahead.
+## Open
 
-## Open: next steps
+1. **Xander listens** to the step × demo grid in `outputs/underfit-djrum-uts-v1/` (8 steps: 0 = no-LoRA baseline, then 2k … 14k; 12 demos each, demo rows explained in the reference doc's standard demo set). Most useful notes: the step where d0 (training prompt) first sounds like the album, and the first step where each genre row d4–d9 flips toward Djrum (collapse point = last checkpoint that still generalises).
+2. **Shortlist 2–3 checkpoints** from that. Copy them from the GPU box's `underfit/state/runs/djrum-uts-v1-20261105174615/403ebe6b/checkpoints/djrum-uts-v1-step=<N>-epoch=<E>.safetensors` to the Mac's `AI_Audio/models/derived/djrum-uts-v1/` (Xander moves files between machines).
+3. **Render on the Mac** with ARC at 120 s, tag-style prompts, two seeds per prompt, strengths 0.6 / 0.8 / 1.0. **No trigger word** (this run trained without one), so prompts are just `TrackType: Music, VocalType: Instrumental, …`:
+   `sa3lab/sa3 --dit medium --decoder same-l --seconds 120 --prompt "TrackType: Music, VocalType: Instrumental, ..." --lora <ckpt> strength=0.8 steps=2- --out <abs path in outputs/>` (`steps=2-` skips the LoRA on the first denoising step so the base model sets the structure; `--seconds` defaults to 30, always pass 120).
+4. **Log** dataset, config, chosen step(s) and how they sound in the SA3 research Claude Doc's Log table (URL in `AI_Audio/CLAUDE.md`).
 
-1. **Pick the dataset (Xander).** 30–90 min of *one* coherent style. Source audio lives in `AI_Audio/audio-data/<artist>/<release>/` (gitignored, never commit).
-2. **Train on the GPU box** via the dashboard: `./install.sh && ./run.sh` → http://localhost:8787 (ssh-tunnel it). First accept the SA3 license once on HF (https://huggingface.co/stabilityai/stable-audio-3-medium), otherwise the ARC downloads fail with 401. Point `HF_HUB_CACHE` at `AI_Audio/models/hf-cache` (repo rule: all downloads go into `models/`). The medium pack is ~17 GB. Encode the dataset in the dashboard (**+ Dataset**), then **+ Finetune** with the config below.
-3. **Pick checkpoints by ear** (see below), copy the chosen `.safetensors` to the Mac (`AI_Audio/models/derived/`), and render with `sa3lab/sa3 --dit medium --decoder same-l --lora <ckpt>`.
-4. **Log** the dataset, config, chosen step and how it sounds in the SA3 research Claude Doc (URL in `AI_Audio/CLAUDE.md`).
+## What ran (2026-11-05)
 
-## Findings
+DoRA-rows r16 on sa3-medium-base (fp32), LR 1e-4, batch 1, 512-latent (~47 s) random crops, on Djrum's *Under Tangled Silence* (11 tracks, 62 min, dataset `djrum-uts-sa3-medium-20261105`). Config: `sa3lab/train/djrum_uts_v1.json`; the only change from the verified 20-step check was **removing the trigger word** (Xander), so every clip trained on `TrackType: Music, VocalType: Instrumental` (10% empty). 14k steps, checkpoint + 12 demos every 2k, 17:46–21:05, no incidents. Mean loss per 2k window fell the whole way (0.82 → 0.72), most of it at high noise (σ 0.8–1.0: 0.92 → 0.80), the signature of learning the album's specific passages; each track was seen ~1,270 times, so expect the late checkpoints to memorise. Low-noise loss stayed flat.
 
-### Data
-- **10 min is the floor; 30+ min is better.** Past that, quality beats quantity.
-- **One style per dataset.** Mixed material trains into mush. For several styles, train one LoRA each and stack them at inference (`--lora a --lora b`).
-- Any format/sample rate/channel count works: it gets resampled to 44.1 kHz stereo. Full songs are fine, because training takes random crops.
-- Latents are codec-locked: **medium ↔ SAME-L, small models ↔ SAME-S.** Re-encode when switching model families.
+## Open questions / v2 candidates
 
-### Captions are not needed
-- dadabots are right. The README explicitly supports "skip metadata entirely". Why it works:
-  - 10% of steps drop the prompt anyway (CFG dropout), so the style is always partly learned unconditionally.
-  - Late in a run even empty-prompt demos take on the style. The README calls this the "unconditional crossover".
-- **Our default:** a fixed made-up trigger string (e.g. `xndrsound`) on every clip. It gives an inference handle that combines with SA3's own `Genre: …, BPM: …` vocabulary.
-- Free extra prompt sources, no hand captioning:
-  - embedded ID3/FLAC tags
-  - folder/file paths (meaningful subfolders become prompts)
-  - `.txt`/`.json` sidecars
-- The README suggests **~50% fixed trigger + 50% tags/paths**. `dataset_processing/autotagger.py` writes JSON sidecars from `Artist - Album (Year)/NN Title` folder layouts.
-
-### Run config (first run)
-
-| Knob | Value | Why |
-|---|---|---|
-| Model | `sa3-medium` | best quality; train on Base, LoRA also works on ARC |
-| Adapter | DoRA-rows, rank 16 | dadabots' default; column variants are deprecated |
-| Latent crop | **~512 (≈47 s), random crop on** | learns style without memorising song structure; ~128 (≈12 s) is the even-shorter option |
-| Steps | 10k–20k; checkpoint every 500, demos every 500–1000 | ~10k = "creatively underfit"; past 20k it starts memorising |
-| Batch | 1–4 | creative knob: 1 = sharper per-song imprint, 4 = smoother average |
-| LR | default (1e-4) | |
-
-Latent rate is 44100/4096 ≈ 10.77 latents/s, so the medium default crop of 4096 ≈ 380 s, i.e. whole songs.
-
-### Choosing a checkpoint
-- The **loss-curve elbow** (where loss first starts dropping) is usually the most interesting checkpoint.
-- Signs a run has got it:
-  1. CFG 7 demos sound right first.
-  2. Later, CFG 1 sounds cleaner than CFG 7.
-  3. Empty-prompt demos take on the style.
-- ARC demos lag but end up cleaner.
-- Keep several checkpoints: memorised ones are still useful for audio-to-audio style transfer.
-
-### Inference
-- **Strength 0.6–0.8** gives "in the style of" without regurgitation.
-- Skipping the LoRA on the first denoising step lets the base model set the song structure.
-- Resuming from a LoRA on a second dataset (e.g. 10k steps at 47 s, then 300 steps at 12 s on another style) fuses the two styles.
-
-## Known issues / unverified
-
-- **Mac-only trap (irrelevant on the GPU box):** with `UNDERFIT_ENGINE=mlx`, the dashboard's prompt config is silently dropped. That covers the trigger word, fixed text and path prompts.
-  - Cause: `underfit/backends/mlx_engine.py` `build_trainer_cmd` never passes `--prompt-config` to the MLX trainer.
-  - Effect: the MLX trainer falls back to plain tag prompts, or to an empty prompt when there are no tags, i.e. training is unconditional.
-  - Fix if we ever train via MLX: write `dataset_config["prompt_config"]` to a temp JSON and pass it as `--prompt-config`.
-- **Unverified:** the MLX pre-encoder (`stable-audio-3/optimized/mlx/scripts/pre_encode_mlx.py`) claims to write underfit's exact latent format, so encoding on the Mac and uploading only latents (~40 MB per hour of audio) should work. It isn't tested against the torch trainer. Encoding on the GPU box is the safe default.
+- **No validation loss**: hold out one track in v2 so a train-vs-val gap can actually show overfitting.
+- **Trigger or not**: v1 has none; if the style leaks into every prefixed prompt, a triggered run is the comparison.
+- Tracks over 600 s are truncated at encode (*Sycamore* loses its last 68 s).
+- Short tracks get the same sampling weight as long ones (one item per file). If *Hold* (111 s) or *Reprise* (156 s) dominate the style, chop the album into equal segments before encoding.
+- Only if v1 is underwhelming: 128-latent (~12 s) crop; batch 2; 50/50 fixed + hand-written per-track `Genre/Mood/BPM` sidecars (next to the audio, not in a `json/` subfolder).
